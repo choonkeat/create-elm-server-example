@@ -1,0 +1,112 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Client</title>
+  <script src="/client.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+</head>
+<body>
+<div id="elm"></div>
+<script>
+var now = new Date()
+var app = Elm.Client.init({
+  node: document.getElementById('elm'),
+  flags: {
+      // custom flags above //
+      requestContextJson: null
+  }
+});
+
+(function (app) {
+  // https://github.com/GoogleChromeLabs/web-push-codelab/issues/46#issuecomment-429273981
+  function urlBase64ToUint8Array (base64String) {
+    var padding = '='.repeat((4 - base64String.length % 4) % 4)
+    var base64 = (base64String + padding)
+      .replace(/-/g, '+')
+      .replace(/_/g, '/')
+
+    var rawData = window.atob(base64)
+    var outputArray = new Uint8Array(rawData.length)
+
+    for (var i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i)
+    }
+    return outputArray
+  }
+
+  console.log('[js webpush]', app.ports.registerWebpush)
+  // https://developer.mozilla.org/en-US/docs/Web/API/Push_API
+  if (app.ports.registerWebpush && navigator && navigator.serviceWorker) {
+    app.ports.registerWebpush.subscribe(function (vapidPublicKey) {
+      console.log('[js webpush]', 'serviceWorker.register...', navigator.serviceWorker)
+      navigator.serviceWorker.register('/service-worker.js')
+      navigator.serviceWorker.ready
+        .then(function (registration) {
+          return registration.pushManager.getSubscription()
+            .then(async function (subscription) {
+              if (subscription) return subscription
+              const convertedVapidKey = urlBase64ToUint8Array(vapidPublicKey)
+              return registration.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: convertedVapidKey
+              })
+            })
+        }).then(function (subscription) {
+          console.log('[js webpush] then', subscription, app.ports.onWebpushRegistered)
+          if (app.ports.onWebpushRegistered && subscription) {
+            app.ports.onWebpushRegistered.send(subscription)
+          }
+        }).catch(function (err) {
+          console.log('[js webpush] catch', err, app.ports.onWebpushRegistered)
+          if (app.ports.onWebpushRegistered && err) {
+            app.ports.onWebpushRegistered.send({ err: err.name })
+          }
+        })
+    })
+  }
+})(app)
+
+console.log('[js websocket]', window.WebSocket)
+if (window.WebSocket) {
+  (function (app, WebSocket) {
+    var ws = {}
+    if (app.ports.websocketOut) {
+      app.ports.websocketOut.subscribe(function (msg) {
+        try {
+          console.log('[js websocket] send', msg)
+          ws.conn.send(msg)
+        } catch (e) {
+          console.log('[js websocket] send fail', e) // e.g. ws.conn not established
+        }
+      })
+    }
+    function connectWebSocket (app, wsUrl, optionalProtocol) {
+      ws.conn = new WebSocket(wsUrl, optionalProtocol)
+      ws.conn.onopen = function (event) {
+        console.log('[js websocket] connected', event)
+        app.ports.websocketConnected.send(event.timeStamp | 0)
+      }
+      ws.conn.onmessage = function (event) {
+        console.log('[js websocket] message', event)
+        app.ports.websocketIn.send(event.data)
+      }
+      ws.conn.onerror = function (event) {
+        console.log('[js websocket] error', event)
+      }
+      ws.conn.onclose = function (event) {
+        console.log('[js websocket] close', event)
+        ws.conn.onclose = null
+        ws.conn = null
+        setTimeout(function () {
+          console.log('[js websocket] retrying...')
+          connectWebSocket(app, wsUrl, optionalProtocol)
+        }, 1000)
+      }
+    }
+    connectWebSocket(app, (window.location.protocol === 'https:' ? 'wss' : 'ws') + '://' + window.location.host)
+  })(app, window.WebSocket)
+}
+</script>
+</body>
+</html>
